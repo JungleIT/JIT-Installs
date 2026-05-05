@@ -1,6 +1,6 @@
 $AppsToInstall = @(
-    "chrome",
-    "7zip",
-    "notepadplusplus"
+    #"chrome",
+    #"7zip",
+    #"notepadplusplus"
     # "office-ltsc"
 )
