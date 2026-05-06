@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Stop"
 
 # Azure Image Builder runs only this file — everything else must be pulled down first.
-$RepoBase   = "https://raw.githubusercontent.com/thompsca06/CIT-Installs/main"
+$RepoBase   = "https://raw.githubusercontent.com/JungleIT/JIT-Installs/main"
 $StagingDir = "C:\ImageBuild\Scripts"
 $LogDir     = "C:\ImageBuild\Logs"
 
