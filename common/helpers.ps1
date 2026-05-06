@@ -50,3 +50,16 @@ function Get-InstalledVersion {
     }
     return $null
 }
+
+function Test-VersionAtLeast {
+    param(
+        [string]$Have,
+        [string]$Need
+    )
+    try {
+        return ([System.Version]$Have -ge [System.Version]$Need)
+    } catch {
+        Write-Log "Could not parse versions ('$Have' vs '$Need') - treating as needs-upgrade" -Level WARN
+        return $false
+    }
+}

@@ -1,14 +1,17 @@
 $ErrorActionPreference = "Stop"
 
 Write-Log "Resolving latest Chrome version..."
-$response = Invoke-RestMethod -Uri "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Windows&num=1" -UseBasicParsing
+$response = Invoke-RestMethod -Uri "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Windows&num=1"
+if (-not $response -or [string]::IsNullOrWhiteSpace($response[0].version)) {
+    throw "Chromium Dash returned no version data"
+}
 $latestVersion = $response[0].version
 Write-Log "Latest Chrome version: $latestVersion"
 
 $installedVersion = Get-InstalledVersion -DisplayName "Google Chrome"
 if ($installedVersion) {
     Write-Log "Installed Chrome version: $installedVersion"
-    if ([System.Version]$installedVersion -ge [System.Version]$latestVersion) {
+    if (Test-VersionAtLeast -Have $installedVersion -Need $latestVersion) {
         Write-Log "Chrome is already up to date ($installedVersion) - skipping"
         return
     }

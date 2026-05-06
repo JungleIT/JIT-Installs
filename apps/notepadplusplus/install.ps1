@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 Write-Log "Resolving latest Notepad++ version..."
-$release = Invoke-RestMethod -Uri "https://api.github.com/repos/notepad-plus-plus/notepad-plus-plus/releases/latest" -UseBasicParsing
+$release = Invoke-RestMethod -Uri "https://api.github.com/repos/notepad-plus-plus/notepad-plus-plus/releases/latest"
 $asset = $release.assets | Where-Object { $_.name -match "Installer\.x64\.exe$" } | Select-Object -First 1
 if (-not $asset) { throw "Could not find Notepad++ x64 installer in latest GitHub release" }
 $latestVersion = $release.tag_name.TrimStart("v")
@@ -10,7 +10,7 @@ Write-Log "Latest Notepad++ version: $latestVersion"
 $installedVersion = Get-InstalledVersion -DisplayName "Notepad++"
 if ($installedVersion) {
     Write-Log "Installed Notepad++ version: $installedVersion"
-    if ([System.Version]$installedVersion -ge [System.Version]$latestVersion) {
+    if (Test-VersionAtLeast -Have $installedVersion -Need $latestVersion) {
         Write-Log "Notepad++ is already up to date ($installedVersion) - skipping"
         return
     }

@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 Write-Log "Resolving latest 7-Zip version..."
-$release = Invoke-RestMethod -Uri "https://api.github.com/repos/ip7z/7zip/releases/latest" -UseBasicParsing
+$release = Invoke-RestMethod -Uri "https://api.github.com/repos/ip7z/7zip/releases/latest"
 $asset = $release.assets | Where-Object { $_.name -match "7z\d+-x64\.msi$" } | Select-Object -First 1
 if (-not $asset) { throw "Could not find 7-Zip x64 MSI in latest GitHub release" }
 $latestVersion = $release.tag_name.TrimStart("v")
@@ -10,7 +10,7 @@ Write-Log "Latest 7-Zip version: $latestVersion"
 $installedVersion = Get-InstalledVersion -DisplayName "7-Zip"
 if ($installedVersion) {
     Write-Log "Installed 7-Zip version: $installedVersion"
-    if ([System.Version]$installedVersion -ge [System.Version]$latestVersion) {
+    if (Test-VersionAtLeast -Have $installedVersion -Need $latestVersion) {
         Write-Log "7-Zip is already up to date ($installedVersion) - skipping"
         return
     }
