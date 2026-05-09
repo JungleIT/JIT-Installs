@@ -96,7 +96,7 @@ if ($friendlyChannel -eq 'Current Channel (Preview)') {
 if (-not $onlineBuild) {
     throw "Could not extract latest online build for channel '$friendlyChannel'"
 }
-Write-Log "Latest published build for $friendlyChannel: $onlineBuild"
+Write-Log "Latest published build for ${friendlyChannel}: $onlineBuild"
 
 # 5. Compare and update if needed
 try {
