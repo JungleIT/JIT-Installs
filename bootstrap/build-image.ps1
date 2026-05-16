@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 $ErrorActionPreference = "Stop"
 
-# Azure Image Builder runs only this file — everything else must be pulled down first.
+# Azure Image Builder runs only this file - everything else must be pulled down first.
 $RepoBase   = "https://raw.githubusercontent.com/JungleIT/JIT-Installs/main"
 $StagingDir = "C:\ImageBuild\Scripts"
 $LogDir     = "C:\ImageBuild\Logs"
@@ -9,7 +9,7 @@ $LogDir     = "C:\ImageBuild\Logs"
 New-Item -ItemType Directory -Path $StagingDir, $LogDir -Force | Out-Null
 Start-Transcript -Path "$LogDir\build-image.log" -Append
 
-# Force TLS 1.2 — required for GitHub raw and most vendor download CDNs
+# Force TLS 1.2 - required for GitHub raw and most vendor download CDNs
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 function Get-RepoFile {
