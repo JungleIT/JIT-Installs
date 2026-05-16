@@ -1,141 +1,149 @@
 $ErrorActionPreference = "Stop"
 
-# Office Click-to-Run updater for AIB image builds.
-#
-# Design (intentionally minimal):
-#   - OfficeC2RClient.exe itself checks the CDN for a newer build on the
-#     installed channel. That is its job - do not reinvent it by scraping
-#     Microsoft Learn HTML or parsing channel GUIDs out of registry.
-#   - We snapshot the installed build, kick off /Update, then poll multiple
-#     C2R progress signals every 30s until both worker processes exit or we
-#     hit a hard cap. Final diff of build number tells us what happened:
-#       * build number changed   -> update applied
-#       * build number unchanged -> already current (no-op)
-#       * workers still running at cap -> log warning, continue build
-#
-# Why we wait at all (vs fire-and-forget):
-#   The deployed AVD session host has Office auto-updates disabled
-#   (DisableAutoUpdates.ps1 customizer in AIB), so Office WILL NOT
-#   auto-update post-deploy. The image must ship with the latest build
-#   or users get a stale Office until manual intervention.
-#
-# Why we surface stage + download size each poll (vs just process names):
-#   Without it the log is just "Waiting for C2R workers" every 30s for an
-#   hour and a half with no signal whether anything is actually happening.
-#   The build operator stares at it not knowing if the network died, the
-#   CDN is slow, or it is genuinely making progress.
-#
-# ASCII-only on purpose: PS 5.1 reads .ps1 files using the system ANSI
-# code page (Windows-1252) when there is no BOM. Non-ASCII characters
-# like em-dashes break parsing on the build VM (CommandNotFoundException
-# on if/else). Stick to plain ASCII in this file - no smart quotes, no
-# em-dashes, no special whitespace.
+# CDN GUID -> friendly channel name (Office CDN "pr/<GUID>" in HKLM ClickToRun config)
+$ChannelGuidMap = @{
+    '55336b82-a18d-4dd6-b5f6-9e5095c314a6' = 'Monthly Enterprise Channel'
+    '492350f6-3a01-4f97-b9c0-c7c6ddf67d60' = 'Current Channel'
+    '64256afe-f5d9-4f86-8936-8840a6a4f5be' = 'Current Channel (Preview)'
+    '7ffbc6bf-bc32-4f92-8982-f9dd17fd3114' = 'Semi-Annual Enterprise Channel'
+    'b8f9b850-328d-4355-9145-c59439a0c4cf' = 'Semi-Annual Enterprise Channel (Preview)'
+    '5440fd1f-7ecb-4221-8110-145efaa6372f' = 'Beta Channel'
+}
+
+function Get-PlainText {
+    param([string]$html)
+    $t = [regex]::Replace($html, '<script[^>]*>.*?</script>', ' ', 'IgnoreCase, Singleline')
+    $t = [regex]::Replace($t, '<style[^>]*>.*?</style>',   ' ', 'IgnoreCase, Singleline')
+    $t = [regex]::Replace($t, '<[^>]+>', ' ')
+    $t = [regex]::Replace($t, '\s+', ' ')
+    return $t.Trim()
+}
+
+# 1. Read installed Office configuration
+try {
+    $regProps             = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -ErrorAction Stop
+    $ExistingVersionStr   = $regProps.VersionToReport
+    $updateChannelUrlRaw  = $regProps.UpdateChannel
+} catch {
+    throw "Office not detected (could not read HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration)"
+}
+
+# 2. Resolve channel from the GUID embedded in UpdateChannel URL
+$friendlyChannel = $null
+if ([string]::IsNullOrWhiteSpace($updateChannelUrlRaw)) {
+    Write-Log "UpdateChannel registry value is empty - defaulting to 'Current Channel'" -Level WARN
+    $friendlyChannel = 'Current Channel'
+} else {
+    $guidMatch = [regex]::Match($updateChannelUrlRaw, '(?i)\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b')
+    if ($guidMatch.Success -and $ChannelGuidMap.ContainsKey($guidMatch.Groups[1].Value.ToLower())) {
+        $friendlyChannel = $ChannelGuidMap[$guidMatch.Groups[1].Value.ToLower()]
+    } else {
+        throw "Unrecognized Office UpdateChannel: $updateChannelUrlRaw"
+    }
+}
+
+if ($friendlyChannel -eq 'Beta Channel') {
+    Write-Log "Beta Channel update checking is not supported by this script - skipping" -Level WARN
+    return
+}
+
+# 3. Convert installed version + derive online-style build (Build.Revision)
+try {
+    $ExistingVersion = [System.Version]$ExistingVersionStr
+} catch {
+    throw "Could not parse installed Office version '$ExistingVersionStr'"
+}
+
+$installedOnlineBuild = "$($ExistingVersion.Build).$($ExistingVersion.Revision)"
+Write-Log "Installed Office: $ExistingVersionStr ($friendlyChannel) - online build $installedOnlineBuild"
+
+# 4. Look up the latest published build for this channel
+$onlineBuild = $null
+if ($friendlyChannel -eq 'Current Channel (Preview)') {
+    $ccpUrl = 'https://learn.microsoft.com/en-us/officeupdates/update-history-current-channel-preview'
+    try {
+        $ccpHtml = (Invoke-WebRequest -Uri $ccpUrl -UseBasicParsing -ErrorAction Stop).Content
+    } catch {
+        throw "Could not fetch Current Channel (Preview) update history"
+    }
+    $m = [regex]::Match($ccpHtml, 'Version\s+\d+\s*\(Build\s+(?<onlineBuild>\d+\.\d+)\)', 'IgnoreCase')
+    if ($m.Success) { $onlineBuild = $m.Groups['onlineBuild'].Value }
+} else {
+    $historyUrl = 'https://learn.microsoft.com/en-us/officeupdates/update-history-microsoft365-apps-by-date'
+    try {
+        $html = (Invoke-WebRequest -Uri $historyUrl -UseBasicParsing -ErrorAction Stop).Content
+    } catch {
+        throw "Could not fetch Office update history"
+    }
+
+    # Scope to the "Supported Versions" section to avoid false matches in the changelog
+    $svMatch   = [regex]::Match($html, '(?is)Supported Versions(?<sec>.*?)(?:Version History|Previous versions|What''s new|</main>|$)')
+    $svSection = if ($svMatch.Success) { $svMatch.Groups['sec'].Value } else { $html }
+    $textSV    = Get-PlainText $svSection
+    $chanEsc   = [regex]::Escape($friendlyChannel)
+
+    $m = [regex]::Match($textSV, $chanEsc + '\s+\d{4}\s+(?<onlineBuild>\d+\.\d+)\b', 'IgnoreCase')
+    if ($m.Success) {
+        $onlineBuild = $m.Groups['onlineBuild'].Value
+    } else {
+        # Looser fallback over the whole page
+        $fullText = Get-PlainText $html
+        $m2 = [regex]::Match($fullText, $chanEsc + '.*?\b(?<onlineBuild>\d{4,5}\.\d{4,5})\b', 'IgnoreCase, Singleline')
+        if ($m2.Success) { $onlineBuild = $m2.Groups['onlineBuild'].Value }
+    }
+}
+
+if (-not $onlineBuild) {
+    throw "Could not extract latest online build for channel '$friendlyChannel'"
+}
+Write-Log "Latest published build for ${friendlyChannel}: $onlineBuild"
+
+# 5. Compare and update if needed
+try {
+    $installedVerObj = [System.Version]$installedOnlineBuild
+    $onlineVerObj    = [System.Version]$onlineBuild
+} catch {
+    throw "Could not compare builds: installed='$installedOnlineBuild' online='$onlineBuild'"
+}
+
+if ($installedVerObj -ge $onlineVerObj) {
+    Write-Log "Office is already up to date - skipping"
+    return
+}
+
+Write-Log "Updating Office from $installedOnlineBuild to $onlineBuild..."
 
 $updateCmd = "C:\Program Files\Common Files\microsoft shared\ClickToRun\OfficeC2RClient.exe"
 if (-not (Test-Path $updateCmd)) {
-    Write-Log "Office C2R not installed at $updateCmd - skipping" -Level WARN
-    return
+    throw "OfficeC2RClient.exe not found at $updateCmd"
 }
-
-$regPath = "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration"
-try {
-    $before = (Get-ItemProperty -Path $regPath -Name VersionToReport -ErrorAction Stop).VersionToReport
-} catch {
-    throw "Could not read installed Office build from $regPath"
-}
-Write-Log "Installed Office build: $before"
-
-Write-Log "Kicking off OfficeC2RClient /Update (CDN-driven; will no-op if already current)"
 Start-Process -FilePath $updateCmd -ArgumentList "/Update User displaylevel=false"
-Start-Sleep -Seconds 10
 
-# Helpers used by the poll loop --------------------------------------------
-
-# Reads C2R's current high-level scenario from registry. Values seen during
-# an update: STREAM (downloading), APPLY (writing files), FINALIZE (cleanup).
-# Returns 'UNKNOWN' if the key is missing or empty (which happens between
-# scenarios). Cheap to call - just a registry read.
-function Get-C2RScenario {
-    try {
-        $s = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Scenario" -Name CurrentScenario -ErrorAction Stop).CurrentScenario
-        if ([string]::IsNullOrWhiteSpace($s)) { return 'UNKNOWN' }
-        return $s.ToUpper()
-    } catch {
-        return 'UNKNOWN'
-    }
-}
-
-# Sums everything under C2R's download staging folder. This is where the
-# CDN stream lands before APPLY moves files into place. Growing size = the
-# download is making progress; static size for many cycles = network stall.
-# Returns bytes (or 0 if the folder doesn't exist yet).
-function Get-DownloadBytes {
-    $dl = "C:\Program Files\Microsoft Office\Updates\Download"
-    if (-not (Test-Path $dl)) { return 0 }
-    try {
-        $sum = (Get-ChildItem -Path $dl -Recurse -File -Force -ErrorAction SilentlyContinue |
-                Measure-Object -Property Length -Sum).Sum
-        if (-not $sum) { return 0 }
-        return [int64]$sum
-    } catch {
-        return 0
-    }
-}
-
-function Format-Bytes {
-    param([int64]$Bytes)
-    if ($Bytes -lt 1MB)  { return ('{0:N0} KB' -f ($Bytes / 1KB)) }
-    if ($Bytes -lt 1GB)  { return ('{0:N0} MB' -f ($Bytes / 1MB)) }
-    return ('{0:N2} GB' -f ($Bytes / 1GB))
-}
-
-# Poll loop ----------------------------------------------------------------
-#
-# 90-min hard cap. C2R updates typically finish in 5-30 min; 90 covers a
-# large cumulative update on a small SKU in a slow region. If we hit this
-# we continue the image build anyway - the update is async and will keep
-# running in the background until the build VM is torn down by AIB.
-
+# Poll registry for VersionToReport change.
+# Timeout = 90 min (was 20 - too short on small SKUs in slow regions where
+# C2R cumulative updates can take 60+ min).
+# Non-fatal on timeout: log a warning and return, don't fail the AIB build.
+# The update keeps running in the background; worst case the captured
+# image has a slightly older build than latest (still updated from prior
+# version, just not bleeding-edge).
 $maxWaitSeconds = 5400
-$pollSeconds    = 30
+$pollInterval   = 20
 $elapsed        = 0
-$workerNames    = @('OfficeC2RClient','OfficeClickToRun')
-$prevBytes      = 0
-$prevScenario   = ''
+$NewVersionStr  = $ExistingVersionStr
 
-while ($elapsed -lt $maxWaitSeconds) {
-    $running  = @($workerNames | ForEach-Object { Get-Process -Name $_ -ErrorAction SilentlyContinue }) | Where-Object { $_ }
-    if (-not $running) { break }
-
-    $scenario = Get-C2RScenario
-    $bytes    = Get-DownloadBytes
-    $delta    = $bytes - $prevBytes
-    $deltaStr = if ($delta -gt 0) { '+' + (Format-Bytes $delta) } else { 'no change' }
-    $stageHi  = if ($scenario -ne $prevScenario -and $prevScenario -ne '') { ' *NEW STAGE*' } else { '' }
-    $workers  = (($running.Name | Select-Object -Unique) -join ',')
-    $mm       = [math]::Floor($elapsed / 60)
-    $ss       = $elapsed % 60
-
-    Write-Log ("Stage={0,-12} Download={1,-9} ({2,-9}) Workers={3} [elapsed {4:00}:{5:00}]{6}" -f `
-        $scenario, (Format-Bytes $bytes), $deltaStr, $workers, $mm, $ss, $stageHi)
-
-    $prevBytes    = $bytes
-    $prevScenario = $scenario
-    Start-Sleep -Seconds $pollSeconds
-    $elapsed += $pollSeconds
+while (($NewVersionStr -eq $ExistingVersionStr) -and ($elapsed -lt $maxWaitSeconds)) {
+    Start-Sleep -Seconds $pollInterval
+    $elapsed += $pollInterval
+    Write-Log "Waiting for Office update... ($($maxWaitSeconds - $elapsed)s remaining)"
+    try {
+        $NewVersionStr = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -Name VersionToReport -ErrorAction Stop).VersionToReport
+    } catch {
+        Write-Log "Could not read Office version during poll" -Level WARN
+    }
 }
 
-try {
-    $after = (Get-ItemProperty -Path $regPath -Name VersionToReport -ErrorAction Stop).VersionToReport
-} catch {
-    Write-Log "Could not re-read Office build after update attempt - continuing" -Level WARN
-    return
-}
-
-if ($after -ne $before) {
-    Write-Log "Office updated: $before -> $after"
-} elseif ($elapsed -ge $maxWaitSeconds) {
-    Write-Log "C2R workers still running after $maxWaitSeconds s - continuing image build (update will finish in background)" -Level WARN
+if ($NewVersionStr -eq $ExistingVersionStr) {
+    Write-Log "Office update did not complete within $maxWaitSeconds seconds. Continuing image build; update may finish in background." -Level WARN
 } else {
-    Write-Log "Office already at latest published build for its channel ($before) - no update applied"
+    Write-Log "Office updated successfully: $ExistingVersionStr -> $NewVersionStr"
 }
