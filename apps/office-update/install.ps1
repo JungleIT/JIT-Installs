@@ -118,26 +118,72 @@ if (-not (Test-Path $updateCmd)) {
     throw "OfficeC2RClient.exe not found at $updateCmd"
 }
 Start-Process -FilePath $updateCmd -ArgumentList "/Update User displaylevel=false"
+# Give C2R a few seconds to spawn the worker process before we look for it
+Start-Sleep -Seconds 10
 
-# Poll registry for VersionToReport change (20-minute timeout)
-$maxWaitSeconds = 1200
-$pollInterval   = 20
+# Two-signal wait, 45-minute cap.
+#
+# Why both signals:
+#   - OfficeC2RClient.exe is the worker process that actually downloads/applies
+#     the update. When it exits, the update is done (success or fail). This is
+#     deterministic and beats polling registry for VersionToReport, which only
+#     gets written near the end of the process.
+#   - VersionToReport still confirms the update *actually applied* — guards
+#     against the edge case where the process exits without changing the build
+#     (e.g. user channel mismatch, no update available after all).
+#
+# Why non-fatal on timeout (was: throw):
+#   - C2R updates take 25-40 minutes on smaller SKUs in slower regions. The old
+#     20-minute throw was failing AIB builds even when the update would have
+#     finished cleanly a few minutes later.
+#   - The update is async — it keeps running in the background. Worst case the
+#     captured image has a slightly older Office build; the running session
+#     host will then auto-update on next user logon. Better than failing the
+#     entire image build (which destroys + recreates ~$$ of compute time).
+$maxWaitSeconds = 2700   # 45 minutes
+$pollInterval   = 30
 $elapsed        = 0
 $NewVersionStr  = $ExistingVersionStr
+$processGone    = $false
 
-while (($NewVersionStr -eq $ExistingVersionStr) -and ($elapsed -lt $maxWaitSeconds)) {
+while ($elapsed -lt $maxWaitSeconds) {
     Start-Sleep -Seconds $pollInterval
     $elapsed += $pollInterval
-    Write-Log "Waiting for Office update... ($($maxWaitSeconds - $elapsed)s remaining)"
+
+    # Primary signal: the OfficeC2RClient worker is finished
+    $running = Get-Process -Name OfficeC2RClient -ErrorAction SilentlyContinue
+    if (-not $running) {
+        $processGone = $true
+        Write-Log "OfficeC2RClient process has exited — checking applied version"
+        try {
+            $NewVersionStr = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -Name VersionToReport -ErrorAction Stop).VersionToReport
+        } catch {
+            Write-Log "Could not read Office version after process exit" -Level WARN
+        }
+        break
+    }
+
+    # Secondary signal: registry version already updated (process may still
+    # be doing post-install cleanup but the apply is effectively complete)
     try {
         $NewVersionStr = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -Name VersionToReport -ErrorAction Stop).VersionToReport
+        if ($NewVersionStr -ne $ExistingVersionStr) {
+            Write-Log "VersionToReport updated to $NewVersionStr (worker still cleaning up) — continuing"
+            break
+        }
     } catch {
         Write-Log "Could not read Office version during poll" -Level WARN
     }
+
+    Write-Log "Waiting for Office update... ($($maxWaitSeconds - $elapsed)s remaining; OfficeC2RClient still running)"
 }
 
 if ($NewVersionStr -eq $ExistingVersionStr) {
-    throw "Office update did not complete within $maxWaitSeconds seconds"
+    if ($processGone) {
+        Write-Log "OfficeC2RClient exited but VersionToReport unchanged ($ExistingVersionStr). Update may have been a no-op or applied without rewriting the marker." -Level WARN
+    } else {
+        Write-Log "Office update did not finish within $maxWaitSeconds seconds. C2R worker is still running and will complete in the background; captured image may have older build. Continuing image build." -Level WARN
+    }
+} else {
+    Write-Log "Office updated successfully: $ExistingVersionStr -> $NewVersionStr"
 }
-
-Write-Log "Office updated successfully: $ExistingVersionStr -> $NewVersionStr"
