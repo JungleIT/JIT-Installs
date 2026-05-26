@@ -117,7 +117,8 @@ $updateCmd = "C:\Program Files\Common Files\microsoft shared\ClickToRun\OfficeC2
 if (-not (Test-Path $updateCmd)) {
     throw "OfficeC2RClient.exe not found at $updateCmd"
 }
-Start-Process -FilePath $updateCmd -ArgumentList "/Update User displaylevel=false"
+# forceappshutdown=true prevents Office processes from blocking the update silently
+Start-Process -FilePath $updateCmd -ArgumentList "/Update User displaylevel=false forceappshutdown=true"
 
 # Poll registry for VersionToReport change.
 # Timeout = 90 min (was 20 - too short on small SKUs in slow regions where
@@ -130,11 +131,31 @@ $maxWaitSeconds = 5400
 $pollInterval   = 20
 $elapsed        = 0
 $NewVersionStr  = $ExistingVersionStr
+$lastLoggedStatus = ''
 
 while (($NewVersionStr -eq $ExistingVersionStr) -and ($elapsed -lt $maxWaitSeconds)) {
     Start-Sleep -Seconds $pollInterval
     $elapsed += $pollInterval
-    Write-Log "Waiting for Office update... ($($maxWaitSeconds - $elapsed)s remaining)"
+
+    # Check C2R scenario/status for progress visibility
+    $c2rStatus = ''
+    try {
+        $updReg = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Updates" -ErrorAction SilentlyContinue
+        if ($updReg) {
+            $scenario = $updReg.UpdateStatus
+            $dlSize   = $updReg.DownloadedSize
+            $totSize  = $updReg.TotalDownloadSize
+            if ($scenario) { $c2rStatus = " [status: $scenario]" }
+            if ($totSize -gt 0) { $c2rStatus += " [dl: $([math]::Round($dlSize/1MB,1))/$([math]::Round($totSize/1MB,1)) MB]" }
+        }
+    } catch {}
+
+    # Log at 60s intervals or when status changes to avoid log spam
+    if (($elapsed % 60 -eq 0) -or ($c2rStatus -ne $lastLoggedStatus)) {
+        Write-Log "Waiting for Office update... ($($maxWaitSeconds - $elapsed)s remaining)$c2rStatus"
+        $lastLoggedStatus = $c2rStatus
+    }
+
     try {
         $NewVersionStr = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -Name VersionToReport -ErrorAction Stop).VersionToReport
     } catch {
