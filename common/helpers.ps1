@@ -1,3 +1,37 @@
+function Install-WingetPackage {
+    param([string]$PackageId)
+    Write-Log "Processing: $PackageId"
+
+    # Try upgrade first — no-op if already current, upgrades if outdated
+    winget upgrade --id $PackageId --exact --silent `
+        --accept-package-agreements --accept-source-agreements 2>&1 |
+        ForEach-Object { Write-Log "  $_" }
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "$PackageId upgraded successfully"
+        return
+    }
+
+    # 0x8A150047 = no applicable upgrade (already at latest)
+    if ($LASTEXITCODE -eq [int32][uint32]0x8A150047) {
+        Write-Log "$PackageId already up to date - skipping"
+        return
+    }
+
+    # Package not installed — fall through to install
+    Write-Log "$PackageId not found by upgrade (exit $LASTEXITCODE) - running install"
+    winget install --id $PackageId --exact --silent `
+        --accept-package-agreements --accept-source-agreements `
+        --scope machine 2>&1 |
+        ForEach-Object { Write-Log "  $_" }
+
+    # 0x8A150039 = already installed at this version — treat as success
+    if ($LASTEXITCODE -notin @(0, [int32][uint32]0x8A150039)) {
+        throw "winget install '$PackageId' failed (exit code $LASTEXITCODE)"
+    }
+    Write-Log "$PackageId installed successfully"
+}
+
 function Invoke-Download {
     param (
         [string]$Uri,

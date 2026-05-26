@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh pr *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Workspace\\\\ALZ\\\\1.CAF\\\\AVDSub\" -Recurse -File)",
+      "Bash(Select-Object FullName)"
+    ]
+  }
+}
