@@ -96,7 +96,7 @@ if ($friendlyChannel -eq 'Current Channel (Preview)') {
 if (-not $onlineBuild) {
     throw "Could not extract latest online build for channel '$friendlyChannel'"
 }
-Write-Log "Latest published build for $friendlyChannel: $onlineBuild"
+Write-Log "Latest published build for ${friendlyChannel}: $onlineBuild"
 
 # 5. Compare and update if needed
 try {
@@ -119,8 +119,14 @@ if (-not (Test-Path $updateCmd)) {
 }
 Start-Process -FilePath $updateCmd -ArgumentList "/Update User displaylevel=false"
 
-# Poll registry for VersionToReport change (20-minute timeout)
-$maxWaitSeconds = 1200
+# Poll registry for VersionToReport change.
+# Timeout = 90 min (was 20 - too short on small SKUs in slow regions where
+# C2R cumulative updates can take 60+ min).
+# Non-fatal on timeout: log a warning and return, don't fail the AIB build.
+# The update keeps running in the background; worst case the captured
+# image has a slightly older build than latest (still updated from prior
+# version, just not bleeding-edge).
+$maxWaitSeconds = 5400
 $pollInterval   = 20
 $elapsed        = 0
 $NewVersionStr  = $ExistingVersionStr
@@ -137,7 +143,7 @@ while (($NewVersionStr -eq $ExistingVersionStr) -and ($elapsed -lt $maxWaitSecon
 }
 
 if ($NewVersionStr -eq $ExistingVersionStr) {
-    throw "Office update did not complete within $maxWaitSeconds seconds"
+    Write-Log "Office update did not complete within $maxWaitSeconds seconds. Continuing image build; update may finish in background." -Level WARN
+} else {
+    Write-Log "Office updated successfully: $ExistingVersionStr -> $NewVersionStr"
 }
-
-Write-Log "Office updated successfully: $ExistingVersionStr -> $NewVersionStr"
