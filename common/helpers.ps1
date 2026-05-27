@@ -1,8 +1,8 @@
-# Populated by Install-WingetPackage; checked at end of bootstrap to fail the build if non-empty.
+﻿# Populated by Install-WingetPackage; checked at end of bootstrap to fail the build if non-empty.
 $script:WingetSkipped = [System.Collections.Generic.List[string]]::new()
 
 function Resolve-Winget {
-    # AIB runs as SYSTEM — winget lives under WindowsApps which isn't in SYSTEM's PATH.
+    # AIB runs as SYSTEM  -  winget lives under WindowsApps which isn't in SYSTEM's PATH.
     $cmd = Get-Command winget -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
 
@@ -12,8 +12,8 @@ function Resolve-Winget {
            Select-Object -First 1 -ExpandProperty FullName
     if ($exe) { return $exe }
 
-    # App Installer is genuinely missing — provision it from GitHub releases.
-    Write-Log "winget not found — bootstrapping App Installer" -Level WARN
+    # App Installer is genuinely missing  -  provision it from GitHub releases.
+    Write-Log "winget not found  -  bootstrapping App Installer" -Level WARN
     $tmp = "C:\ImageBuild\winget-bootstrap"
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
@@ -38,7 +38,7 @@ function Resolve-Winget {
            Select-Object -First 1 -ExpandProperty FullName
     if ($exe) { return $exe }
 
-    throw "winget.exe not found even after bootstrap — check App Installer provisioning logs."
+    throw "winget.exe not found even after bootstrap  -  check App Installer provisioning logs."
 }
 
 function Install-WingetPackage {
@@ -47,7 +47,7 @@ function Install-WingetPackage {
 
     $winget = Resolve-Winget
 
-    # Try upgrade first — no-op if already current, upgrades if outdated
+    # Try upgrade first  -  no-op if already current, upgrades if outdated
     & $winget upgrade --id $PackageId --exact --silent `
         --accept-package-agreements --accept-source-agreements 2>&1 |
         ForEach-Object { Write-Log "  $_" }
@@ -63,16 +63,16 @@ function Install-WingetPackage {
         return
     }
 
-    # Package not installed — fall through to install
+    # Package not installed  -  fall through to install
     Write-Log "$PackageId not found by upgrade (exit $LASTEXITCODE) - running install"
     & $winget install --id $PackageId --exact --silent `
         --accept-package-agreements --accept-source-agreements `
         --scope machine 2>&1 |
         ForEach-Object { Write-Log "  $_" }
 
-    # 0x8A150039 = already installed at this version — treat as success
+    # 0x8A150039 = already installed at this version  -  treat as success
     if ($LASTEXITCODE -notin @(0, -1978335175)) {
-        Write-Log "SKIPPED $PackageId — install failed (exit code $LASTEXITCODE)" -Level WARN
+        Write-Log "SKIPPED $PackageId  -  install failed (exit code $LASTEXITCODE)" -Level WARN
         $script:WingetSkipped.Add($PackageId)
         return
     }
