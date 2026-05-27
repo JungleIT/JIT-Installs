@@ -1,3 +1,6 @@
+# Populated by Install-WingetPackage; checked at end of bootstrap to fail the build if non-empty.
+$script:WingetSkipped = [System.Collections.Generic.List[string]]::new()
+
 function Resolve-Winget {
     # AIB runs as SYSTEM — winget lives under WindowsApps which isn't in SYSTEM's PATH.
     $cmd = Get-Command winget -ErrorAction SilentlyContinue
@@ -69,7 +72,8 @@ function Install-WingetPackage {
 
     # 0x8A150039 = already installed at this version — treat as success
     if ($LASTEXITCODE -notin @(0, -1978335175)) {
-        Write-Log "SKIPPED $PackageId — install failed (exit code $LASTEXITCODE), install manually after build" -Level WARN
+        Write-Log "SKIPPED $PackageId — install failed (exit code $LASTEXITCODE)" -Level WARN
+        $script:WingetSkipped.Add($PackageId)
         return
     }
     Write-Log "$PackageId installed successfully"
