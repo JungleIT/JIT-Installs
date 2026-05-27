@@ -55,7 +55,7 @@ function Install-WingetPackage {
     }
 
     # 0x8A150047 = no applicable upgrade (already at latest)
-    if ($LASTEXITCODE -eq [int32][uint32]0x8A150047) {
+    if ($LASTEXITCODE -eq -1978335161) {
         Write-Log "$PackageId already up to date - skipping"
         return
     }
@@ -68,7 +68,7 @@ function Install-WingetPackage {
         ForEach-Object { Write-Log "  $_" }
 
     # 0x8A150039 = already installed at this version — treat as success
-    if ($LASTEXITCODE -notin @(0, [int32][uint32]0x8A150039)) {
+    if ($LASTEXITCODE -notin @(0, -1978335175)) {
         throw "winget install '$PackageId' failed (exit code $LASTEXITCODE)"
     }
     Write-Log "$PackageId installed successfully"
