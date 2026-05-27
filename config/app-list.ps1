@@ -9,5 +9,6 @@ $WingetApps = @(
 # Apps requiring a custom install script at apps/<name>/install.ps1.
 # Use for software not in the winget catalog or needing special handling (e.g. Office).
 $CustomApps = @(
-    'office-update'
+    'office-update',
+    'teams-avd'
 )
