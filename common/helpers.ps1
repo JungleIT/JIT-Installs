@@ -69,7 +69,8 @@ function Install-WingetPackage {
 
     # 0x8A150039 = already installed at this version — treat as success
     if ($LASTEXITCODE -notin @(0, -1978335175)) {
-        throw "winget install '$PackageId' failed (exit code $LASTEXITCODE)"
+        Write-Log "SKIPPED $PackageId — install failed (exit code $LASTEXITCODE), install manually after build" -Level WARN
+        return
     }
     Write-Log "$PackageId installed successfully"
 }
